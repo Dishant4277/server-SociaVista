@@ -17,6 +17,9 @@ import { verifyToken } from "./middleware/auth.js";
 import User from "./models/User.js";
 import Post from "./models/Post.js";
 import { users, posts } from "./data/index.js";
+import Grid from "gridfs-stream";
+import { GridFsStorage } from "multer-gridfs-storage";
+import { log } from "console";
 
 /* CONFIGURATIONS */
 const __filename = fileURLToPath(import.meta.url);
@@ -33,19 +36,49 @@ app.use(cors());
 app.use("/assets", express.static(path.join(__dirname, "public/assets")));
 
 /* FILE STORAGE */
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, "public/assets");
-  },
-  filename: function (req, file, cb) {
-    cb(null, file.originalname);
+// Connect to MongoDB
+mongoose.connect(`${process.env.MONGO_URL}`, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+
+const conn = mongoose.createConnection(`${process.env.MONGO_URL}`);
+let gfs, gridfsBucket;
+
+conn.once("open", () => {
+  gridfsBucket = new mongoose.mongo.GridFSBucket(conn.db, {
+    bucketName: "uploads",
+  });
+  gfs = Grid(conn.db, mongoose.mongo);
+  gfs.collection("uploads"); // Set the collection name
+});
+
+// Set up GridFS storage
+const storage = new GridFsStorage({
+  url: `${process.env.MONGO_URL}`, // Database connection URL
+  file: (req, file) => {
+    return {
+      filename: `${file.originalname}`,
+      bucketName: "uploads", // Must match the collection name above
+    };
   },
 });
+
 const upload = multer({ storage });
 
 /* ROUTES WITH FILES */
 app.post("/auth/register", upload.single("picture"), register);
 app.post("/posts", verifyToken, upload.single("picture"), createPost);
+// Retrieve a single image by filename
+app.get("/image/:filename", async (req, res) => {
+  try {
+    const file = await gfs.files.findOne({ filename: req.params.filename });
+    const readStream = gridfsBucket.openDownloadStream(file._id);
+    readStream.pipe(res);
+  } catch (error) {
+    res.send("not found");
+  }
+});
 
 /* ROUTES */
 app.use("/auth", authRoutes);
